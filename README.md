@@ -5,7 +5,19 @@
 
 REST Client allows you to send HTTP request and view the response in Visual Studio Code directly. It eliminates the need for a separate tool to test REST APIs and makes API testing convenient and efficient.
 
+## About This Fork
+
+This repository is forked from [Huachao/vscode-restclient](https://github.com/Huachao/vscode-restclient). The fork keeps the original REST Client functionality and adds the following enhancements:
+
+* Stream Server-Sent Events (SSE) responses in real time instead of waiting for the connection to close
+* Keep the complete SSE response available in the original response tab
+* Add an **SSE Messages** tab with a JSONPath input at the top for extracting content from each event
+* Reapply the JSONPath expression to received messages when the expression changes
+* Merge matching string fragments into continuous output and format matching objects and arrays as JSON
+* Use a fork-specific version (`0.27.0`) so current packages reliably replace older installations in VS Code-compatible editors, including Trae CN
+
 ## Main Features
+* Stream __SSE responses__ live and inspect merged message content with JSONPath
 * Send/Cancel/Rerun __HTTP request__ in editor and view response in a separate pane with syntax highlight
 * Send __GraphQL query__ and author __GraphQL variables__ in editor
 * Send __cURL command__ in editor and copy HTTP request as `cURL command`

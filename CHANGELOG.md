@@ -1,3 +1,9 @@
+## 0.27.0 (2026/07/19)
+* __Feature__: Add a live SSE Messages panel with JSONPath filtering and merged output
+
+## 0.26.1 (2026/07/19)
+* __Feature__: Stream Server-Sent Events responses as each event is received
+
 ## 0.25.1 (2022/07/06)
 * __Bug Fix__: [Fix request parse error for curl request without body](https://github.com/Huachao/vscode-restclient/issues/1026)
 

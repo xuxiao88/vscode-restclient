@@ -13,6 +13,7 @@ import { awsSignature } from './auth/awsSignature';
 import { digest } from './auth/digest';
 import { MimeUtility } from './mimeUtility';
 import { getHeader, removeHeader } from './misc';
+import { SseStreamParser } from './sseStreamParser';
 import { convertBufferToStream, convertStreamToBuffer } from './streamUtility';
 import { UserDataManager } from './userDataManager';
 import { getCurrentHttpFileName, getWorkspaceRootPath } from './workspaceUtility';
@@ -30,6 +31,11 @@ type Certificate = {
     passphrase?: string;
 };
 
+export type SseResponseHandler = {
+    onStart(response: HttpResponse): void;
+    onEvent(response: HttpResponse, event: string): void;
+};
+
 export class HttpClient {
     private cookieStore: Store;
 
@@ -38,27 +44,59 @@ export class HttpClient {
         this.cookieStore = new CookieFileStore(cookieFilePath) as Store;
     }
 
-    public async send(httpRequest: HttpRequest, settings?: IRestClientSettings): Promise<HttpResponse> {
+    public async send(
+        httpRequest: HttpRequest,
+        settings?: IRestClientSettings,
+        sseHandler?: SseResponseHandler): Promise<HttpResponse> {
         settings = settings || SystemSettings.Instance;
 
         const options = await this.prepareOptions(httpRequest, settings);
 
         let bodySize = 0;
         let headersSize = 0;
+        let sseResponse: HttpResponse | undefined;
         const requestUrl = encodeUrl(httpRequest.url);
         const request: CancelableRequest<Response<Buffer>> = got.default(requestUrl, options);
         httpRequest.setUnderlyingRequest(request);
-        (request as any).on('response', res => {
+        (request as any).on('response', (res: Response<Buffer>) => {
             if (res.rawHeaders) {
                 headersSize += res.rawHeaders.map(h => h.length).reduce((a, b) => a + b, 0);
                 headersSize += (res.rawHeaders.length) / 2;
             }
-            res.on('data', chunk => {
-                bodySize += chunk.length;
-            });
+
+            const responseHeaders = HttpClient.normalizeHeaderNames(res.headers, res.rawHeaders);
+            if (sseHandler && HttpClient.isEventStream(responseHeaders)) {
+                sseResponse = this.createHttpResponse(
+                    res,
+                    responseHeaders,
+                    '',
+                    0,
+                    headersSize,
+                    Buffer.alloc(0),
+                    options,
+                    httpRequest,
+                    requestUrl);
+                sseHandler.onStart(sseResponse);
+
+                const parser = new SseStreamParser(event => {
+                    sseResponse!.appendBody(event);
+                    sseHandler.onEvent(sseResponse!, event);
+                });
+                res.on('data', chunk => parser.push(chunk));
+                res.on('end', () => parser.end());
+            } else {
+                res.on('data', chunk => {
+                    bodySize += chunk.length;
+                });
+            }
         });
 
         const response = await request;
+
+        if (sseResponse) {
+            sseResponse.timingPhases = response.timings.phases;
+            return sseResponse;
+        }
 
         const contentType = response.headers['content-type'];
         let encoding: string | undefined;
@@ -77,31 +115,17 @@ export class HttpClient {
             bodyString = this.decodeEscapedUnicodeCharacters(bodyString);
         }
 
-        // adjust response header case, due to the response headers in nodejs http module is in lowercase
         const responseHeaders: ResponseHeaders = HttpClient.normalizeHeaderNames(response.headers, response.rawHeaders);
-
-        const requestBody = options.body;
-
-        return new HttpResponse(
-            response.statusCode,
-            response.statusMessage!,
-            response.httpVersion,
+        return this.createHttpResponse(
+            response,
             responseHeaders,
             bodyString,
             bodySize,
             headersSize,
             bodyBuffer,
-            response.timings.phases,
-            new HttpRequest(
-                options.method!,
-                requestUrl,
-                HttpClient.normalizeHeaderNames(
-                    (response as any).request.options.headers as RequestHeaders,
-                    Object.keys(httpRequest.headers)),
-                Buffer.isBuffer(requestBody) ? convertBufferToStream(requestBody) : requestBody,
-                httpRequest.rawBody,
-                httpRequest.name
-            ));
+            options,
+            httpRequest,
+            requestUrl);
     }
 
     public async clearCookies() {
@@ -211,6 +235,39 @@ export class HttpClient {
         });
     }
 
+    private createHttpResponse(
+        response: Response<Buffer>,
+        responseHeaders: ResponseHeaders,
+        body: string,
+        bodySize: number,
+        headersSize: number,
+        bodyBuffer: Buffer,
+        options: OptionsOfBufferResponseBody,
+        httpRequest: HttpRequest,
+        requestUrl: string): HttpResponse {
+        const requestBody = options.body;
+        return new HttpResponse(
+            response.statusCode,
+            response.statusMessage!,
+            response.httpVersion,
+            responseHeaders,
+            body,
+            bodySize,
+            headersSize,
+            bodyBuffer,
+            response.timings.phases,
+            new HttpRequest(
+                options.method!,
+                requestUrl,
+                HttpClient.normalizeHeaderNames(
+                    (response as any).request.options.headers as RequestHeaders,
+                    Object.keys(httpRequest.headers)),
+                Buffer.isBuffer(requestBody) ? convertBufferToStream(requestBody) : requestBody,
+                httpRequest.rawBody,
+                httpRequest.name
+            ));
+    }
+
     private getRequestCertificate(requestUrl: string, settings: IRestClientSettings): Certificate | null {
         const host = url.parse(requestUrl).host;
         if (!host || !(host in settings.hostCertificates)) {
@@ -309,5 +366,10 @@ export class HttpClient {
         }
 
         return adjustedResponseHeaders as T;
+    }
+
+    private static isEventStream(headers: ResponseHeaders): boolean {
+        const contentType = getHeader(headers, 'Content-Type');
+        return contentType?.toString().split(';', 1)[0].trim().toLowerCase() === 'text/event-stream';
     }
 }

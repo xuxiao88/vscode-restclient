@@ -2,6 +2,7 @@ import { ExtensionContext, Range, TextDocument, ViewColumn, window } from 'vscod
 import Logger from '../logger';
 import { IRestClientSettings, RequestSettings, RestClientSettings } from '../models/configurationSettings';
 import { HistoricalHttpRequest, HttpRequest } from '../models/httpRequest';
+import { HttpResponse } from '../models/httpResponse';
 import { RequestMetadata } from '../models/requestMetadata';
 import { RequestParserFactory } from '../models/requestParserFactory';
 import { trace } from "../utils/decorator";
@@ -13,12 +14,14 @@ import { UserDataManager } from '../utils/userDataManager';
 import { getCurrentTextDocument } from '../utils/workspaceUtility';
 import { HttpResponseTextDocumentView } from '../views/httpResponseTextDocumentView';
 import { HttpResponseWebview } from '../views/httpResponseWebview';
+import { SseMessageWebview } from '../views/sseMessageWebview';
 
 export class RequestController {
     private _requestStatusEntry: RequestStatusEntry;
     private _httpClient: HttpClient;
     private _webview: HttpResponseWebview;
     private _textDocumentView: HttpResponseTextDocumentView;
+    private _sseMessageWebview: SseMessageWebview;
     private _lastRequestSettingTuple: [HttpRequest, IRestClientSettings];
     private _lastPendingRequest?: HttpRequest;
 
@@ -28,6 +31,7 @@ export class RequestController {
         this._webview = new HttpResponseWebview(context);
         this._webview.onDidCloseAllWebviewPanels(() => this._requestStatusEntry.update({ state: RequestState.Closed }));
         this._textDocumentView = new HttpResponseTextDocumentView();
+        this._sseMessageWebview = new SseMessageWebview(context);
     }
 
     @trace('Request')
@@ -99,7 +103,45 @@ export class RequestController {
 
         // set http request
         try {
-            const response = await this._httpClient.send(httpRequest, settings);
+            let streamingResponse: HttpResponse | undefined;
+            let streamingRenderQueue = Promise.resolve();
+            const enqueueStreamingRender = (operation: () => Promise<void>) => {
+                streamingRenderQueue = streamingRenderQueue
+                    .then(operation)
+                    .catch(reason => {
+                        Logger.error('Unable to update SSE response preview:', reason);
+                        window.showErrorMessage(reason?.message || reason);
+                    });
+            };
+
+            const response = await this._httpClient.send(httpRequest, settings, {
+                onStart: eventStreamResponse => {
+                    streamingResponse = eventStreamResponse;
+                    enqueueStreamingRender(async () => {
+                        const previewColumn = this.getPreviewColumn(settings);
+                        if (!previewColumn) {
+                            return;
+                        }
+                        if (settings.previewResponseInUntitledDocument) {
+                            await this._textDocumentView.renderStreaming(eventStreamResponse, previewColumn);
+                        } else {
+                            await this._webview.render(eventStreamResponse, previewColumn, true);
+                        }
+                        await this._sseMessageWebview.render(eventStreamResponse, previewColumn);
+                    });
+                },
+                onEvent: (eventStreamResponse, event) => {
+                    enqueueStreamingRender(async () => {
+                        if (settings.previewResponseInUntitledDocument) {
+                            await this._textDocumentView.appendStreamingBody(eventStreamResponse, event);
+                        } else {
+                            await this._webview.appendStreamingBody(eventStreamResponse, event);
+                        }
+                        await this._sseMessageWebview.append(eventStreamResponse, event);
+                    });
+                }
+            });
+            await streamingRenderQueue;
 
             // check cancel
             if (httpRequest.isCancelled) {
@@ -112,19 +154,18 @@ export class RequestController {
                 RequestVariableCache.add(document, httpRequest.name, response);
             }
 
-            try {
-                const activeColumn = window.activeTextEditor!.viewColumn;
-                const previewColumn = settings.previewColumn === ViewColumn.Active
-                    ? activeColumn
-                    : ((activeColumn as number) + 1) as ViewColumn;
-                if (settings.previewResponseInUntitledDocument) {
-                    this._textDocumentView.render(response, previewColumn);
-                } else if (previewColumn) {
-                    this._webview.render(response, previewColumn);
+            if (!streamingResponse) {
+                try {
+                    const previewColumn = this.getPreviewColumn(settings);
+                    if (settings.previewResponseInUntitledDocument) {
+                        this._textDocumentView.render(response, previewColumn);
+                    } else if (previewColumn) {
+                        this._webview.render(response, previewColumn);
+                    }
+                } catch (reason) {
+                    Logger.error('Unable to preview response:', reason);
+                    window.showErrorMessage(reason);
                 }
-            } catch (reason) {
-                Logger.error('Unable to preview response:', reason);
-                window.showErrorMessage(reason);
             }
 
             // persist to history json file
@@ -152,8 +193,16 @@ export class RequestController {
         }
     }
 
+    private getPreviewColumn(settings: IRestClientSettings): ViewColumn | undefined {
+        const activeColumn = window.activeTextEditor?.viewColumn;
+        return settings.previewColumn === ViewColumn.Active || !activeColumn
+            ? activeColumn
+            : ((activeColumn as number) + 1) as ViewColumn;
+    }
+
     public dispose() {
         this._requestStatusEntry.dispose();
         this._webview.dispose();
+        this._sseMessageWebview.dispose();
     }
 }

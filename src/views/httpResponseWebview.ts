@@ -69,7 +69,7 @@ export class HttpResponseWebview extends BaseWebview {
         this.context.subscriptions.push(commands.registerCommand('rest-client.save-response-body', this.saveBody, this));
     }
 
-    public async render(response: HttpResponse, column: ViewColumn) {
+    public async render(response: HttpResponse, column: ViewColumn, streaming: boolean = false) {
         let panel: WebviewPanel;
         if (this.settings.showResponseInDifferentTab || this.panels.length === 0) {
             panel = window.createWebviewPanel(
@@ -114,7 +114,9 @@ export class HttpResponseWebview extends BaseWebview {
             panel.title = this.getTitle(response);
         }
 
-        panel.webview.html = this.getHtmlForWebview(panel, response);
+        panel.webview.html = streaming
+            ? this.getStreamingHtmlForWebview(panel, response)
+            : this.getHtmlForWebview(panel, response);
 
         this.setPreviewActiveContext(this.settings.previewResponsePanelTakeFocus);
 
@@ -124,6 +126,17 @@ export class HttpResponseWebview extends BaseWebview {
         this.activePanel = panel;
 
         this.setIsHTMLResponse(this.activeResponse);
+    }
+
+    public async appendStreamingBody(response: HttpResponse, event: string) {
+        if (this.settings.previewOption === PreviewOption.Headers) {
+            return;
+        }
+
+        const panel = this.panels.find(candidate => this.panelResponses.get(candidate) === response);
+        if (panel) {
+            await panel.webview.postMessage({ command: 'appendSse', text: event });
+        }
     }
 
     public dispose() {
@@ -276,7 +289,44 @@ export class HttpResponseWebview extends BaseWebview {
     </body>`;
     }
 
-    private highlightResponse(response: HttpResponse): string {
+    private getStreamingHtmlForWebview(panel: WebviewPanel, response: HttpResponse): string {
+        const code = this.highlightResponse(response, false);
+        const nonce = new Date().getTime() + '' + new Date().getMilliseconds();
+        const csp = this.getCsp(nonce);
+        return `
+    <head>
+        <link rel="stylesheet" type="text/css" href="${panel.webview.asWebviewUri(this.baseFilePath)}">
+        <link rel="stylesheet" type="text/css" href="${panel.webview.asWebviewUri(this.vscodeStyleFilePath)}">
+        <link rel="stylesheet" type="text/css" href="${panel.webview.asWebviewUri(this.customStyleFilePath)}">
+        ${this.getSettingsOverrideStyles(2)}
+        ${csp}
+        <script nonce="${nonce}">
+            document.addEventListener('DOMContentLoaded', function () {
+                document.getElementById('scroll-to-top')
+                        .addEventListener('click', function () { window.scrollTo(0,0); });
+            });
+            window.addEventListener('message', function (event) {
+                if (event.data.command !== 'appendSse') {
+                    return;
+                }
+                const content = document.getElementById('sse-content');
+                const shouldScroll = window.innerHeight + window.scrollY >= document.body.scrollHeight - 30;
+                content.appendChild(document.createTextNode(event.data.text));
+                if (shouldScroll) {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }
+            });
+        </script>
+    </head>
+    <body>
+        <div>
+            <pre><code id="sse-content">${code}</code></pre>
+            <a id="scroll-to-top" role="button" aria-label="scroll to top" title="Scroll To Top"><span class="icon"></span></a>
+        </div>
+    </body>`;
+    }
+
+    private highlightResponse(response: HttpResponse, includeBody: boolean = true): string {
         let code = '';
         const previewOption = this.settings.previewOption;
         if (previewOption === PreviewOption.Exchange) {
@@ -308,7 +358,7 @@ ${formatHeaders(response.headers)}`;
             code += hljs.highlight('http', responseNonBodyPart + (previewOption !== PreviewOption.Headers ? '\r\n' : '')).value;
         }
 
-        if (previewOption !== PreviewOption.Headers) {
+        if (previewOption !== PreviewOption.Headers && includeBody) {
             const responseBodyPart = `${ResponseFormatUtility.formatBody(response.body, response.contentType, this.settings.suppressResponseBodyContentTypeValidationWarning)}`;
             if (this.settings.disableHighlightResponseBodyForLargeResponse &&
                 response.bodySizeInBytes > this.settings.largeResponseBodySizeLimitInMB * 1024 * 1024) {

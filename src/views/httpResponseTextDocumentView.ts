@@ -1,5 +1,5 @@
 import { EOL } from 'os';
-import { languages, Position, Range, TextDocument, ViewColumn, window, workspace } from 'vscode';
+import { languages, Position, Range, TextDocument, ViewColumn, window, workspace, WorkspaceEdit } from 'vscode';
 import { SystemSettings } from '../models/configurationSettings';
 import { HttpResponse } from '../models/httpResponse';
 import { PreviewOption } from '../models/previewOption';
@@ -13,11 +13,18 @@ export class HttpResponseTextDocumentView {
 
     protected readonly documents: TextDocument[] = [];
 
+    private readonly streamingDocuments = new Map<HttpResponse, TextDocument>();
+
     public constructor() {
         workspace.onDidCloseTextDocument(e => {
             const index = this.documents.indexOf(e);
             if (index !== -1) {
                 this.documents.splice(index, 1);
+            }
+            for (const [response, document] of this.streamingDocuments) {
+                if (document === e) {
+                    this.streamingDocuments.delete(response);
+                }
             }
         });
     }
@@ -42,7 +49,38 @@ export class HttpResponseTextDocumentView {
         }
     }
 
-    private getTextDocumentContent(response: HttpResponse): string {
+    public async renderStreaming(response: HttpResponse, column?: ViewColumn) {
+        const content = this.getTextDocumentContent(response, false);
+        const language = this.getVSCodeDocumentLanguageId(response);
+        const document = await workspace.openTextDocument({ language, content });
+        this.documents.push(document);
+        this.streamingDocuments.set(response, document);
+        await window.showTextDocument(document, {
+            viewColumn: column,
+            preserveFocus: !this.settings.previewResponsePanelTakeFocus,
+            preview: false
+        });
+    }
+
+    public async appendStreamingBody(response: HttpResponse, event: string) {
+        if (this.settings.previewOption === PreviewOption.Headers) {
+            return;
+        }
+
+        const document = this.streamingDocuments.get(response);
+        if (!document || document.isClosed) {
+            return;
+        }
+
+        const end = document.lineAt(document.lineCount - 1).range.end;
+        const edit = new WorkspaceEdit();
+        edit.insert(document.uri, end, event);
+        if (!await workspace.applyEdit(edit)) {
+            throw new Error('Unable to append the latest SSE event to the response document.');
+        }
+    }
+
+    private getTextDocumentContent(response: HttpResponse, includeBody: boolean = true): string {
         let content = '';
         const previewOption = this.settings.previewOption;
         if (previewOption === PreviewOption.Exchange) {
@@ -65,7 +103,7 @@ export class HttpResponseTextDocumentView {
             content += formatHeaders(response.headers);
         }
 
-        if (previewOption !== PreviewOption.Headers) {
+        if (previewOption !== PreviewOption.Headers && includeBody) {
             const prefix = previewOption === PreviewOption.Body ? '' : EOL;
             content += `${prefix}${ResponseFormatUtility.formatBody(response.body, response.contentType, true)}`;
         }
