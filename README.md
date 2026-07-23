@@ -10,14 +10,14 @@ REST Client allows you to send HTTP request and view the response in Visual Stud
 This repository is forked from [Huachao/vscode-restclient](https://github.com/Huachao/vscode-restclient). The fork keeps the original REST Client functionality and adds the following enhancements:
 
 * Stream Server-Sent Events (SSE) responses in real time instead of waiting for the connection to close
-* Keep the complete SSE response available in the original response tab
-* Add an **SSE Messages** tab with a JSONPath input at the top for extracting content from each event
-* Reapply the JSONPath expression to received messages when the expression changes
-* Merge matching string fragments into continuous output and format matching objects and arrays as JSON
-* Use a fork-specific version (`0.27.0`) so current packages reliably replace older installations in VS Code-compatible editors, including Trae CN
+* Keep the complete raw SSE response in the original response view, with live elapsed time while the stream is active
+* Add an **SSE Messages** tab for JSONPath filtering, merged output, message counts, and reusable query history
+* Edit and resend the previous request body for multi-round SSE conversations without leaving the SSE Messages tab
+* Preserve output from every round with visual separators and reapply JSONPath expressions across the complete conversation
+* Use a fork-specific version (`0.27.2`) so current packages reliably replace older installations in VS Code-compatible editors, including Trae CN
 
 ## Main Features
-* Stream __SSE responses__ live and inspect merged message content with JSONPath
+* Stream __SSE responses__ live, filter messages with JSONPath, and continue multi-round conversations
 * Send/Cancel/Rerun __HTTP request__ in editor and view response in a separate pane with syntax highlight
 * Send __GraphQL query__ and author __GraphQL variables__ in editor
 * Send __cURL command__ in editor and copy HTTP request as `cURL command`
@@ -292,6 +292,33 @@ If you want to cancel a processing request, click the waiting spin icon or use s
 
 ## Rerun Last Request
 Sometimes you may want to refresh the API response, now you could do it simply using shortcut `Ctrl+Alt+L`(`Cmd+Alt+L` for macOS), or press `F1` and then select/type `Rest Client: Rerun Last Request` to rerun the last request.
+
+## Server-Sent Events (SSE)
+When a response has a `Content-Type` of `text/event-stream`, REST Client starts displaying events as soon as they arrive instead of waiting for the connection to close. For example:
+
+```http
+POST https://example.com/chat/stream HTTP/1.1
+Accept: text/event-stream
+Content-Type: application/json
+
+{
+    "message": "Hello"
+}
+```
+
+The complete raw event stream remains available in the regular response view. Its tab title shows the live elapsed time while the request is active and the final total duration after the stream ends.
+
+REST Client also opens an **SSE Messages** tab with the following tools:
+
+* Enter a JSONPath expression and select **Apply** to extract content from each SSE `data:` payload. The default expression, `$`, displays the complete payload.
+* Change the JSONPath expression at any time to reprocess all messages already received, including messages from earlier rounds.
+* Reuse up to six recent JSONPath expressions from the history menu. History is ordered most-recent first, and individual entries can be deleted.
+* View aggregate **Messages** and **Matches** counts for the complete conversation.
+* Read matching JSON string fragments as continuous output, while matching objects and arrays are formatted as JSON.
+* After a stream finishes, edit the **Next request body** and select **Send**, or press `Ctrl+Enter` (`Cmd+Enter` on macOS), to reuse the previous method, URL, and headers with the new body.
+* Keep every round in the same tab. Visual round separators preserve the conversation history, and the active JSONPath expression is applied across all rounds.
+
+The **Send** button is disabled while a request is active. Cancellation, request failures, and non-SSE responses are reported in the SSE Messages tab so the request body can be adjusted and sent again.
 
 ## Request History
 ![request-history](https://raw.githubusercontent.com/Huachao/vscode-restclient/master/images/request-history.png)
