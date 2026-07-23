@@ -14,7 +14,6 @@ This repository is forked from [Huachao/vscode-restclient](https://github.com/Hu
 * Add an **SSE Messages** tab for JSONPath filtering, merged output, message counts, and reusable query history
 * Edit and resend the previous request body for multi-round SSE conversations without leaving the SSE Messages tab
 * Preserve output from every round with visual separators and reapply JSONPath expressions across the complete conversation
-* Use a fork-specific version (`0.27.2`) so current packages reliably replace older installations in VS Code-compatible editors, including Trae CN
 
 ## Main Features
 * Stream __SSE responses__ live, filter messages with JSONPath, and continue multi-round conversations
