@@ -255,6 +255,7 @@ export class HttpClient {
             bodySize,
             headersSize,
             bodyBuffer,
+            response.timings.start,
             response.timings.phases,
             new HttpRequest(
                 options.method!,

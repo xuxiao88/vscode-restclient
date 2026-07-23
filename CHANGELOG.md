@@ -1,3 +1,9 @@
+## 0.27.2 (2026/07/23)
+* __Feature__: Add JSONPath history with recent-first ordering and per-item deletion to the SSE Messages panel
+* __Feature__: Support editing and resending the previous request body for multi-round SSE conversations
+* __Improvement__: Preserve SSE output across rounds with visual separators and aggregate JSONPath filtering
+* __Bug Fix__: Show live elapsed time for active SSE requests and the final total duration when the stream ends
+
 ## 0.27.0 (2026/07/19)
 * __Feature__: Add a live SSE Messages panel with JSONPath filtering and merged output
 

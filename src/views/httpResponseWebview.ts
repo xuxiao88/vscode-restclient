@@ -27,6 +27,8 @@ export class HttpResponseWebview extends BaseWebview {
 
     private readonly panelResponses: Map<WebviewPanel, HttpResponse>;
 
+    private readonly streamingTitleTimers = new Map<HttpResponse, NodeJS.Timeout>();
+
     private readonly clipboard: Clipboard = env.clipboard;
 
     protected get viewType(): string {
@@ -74,7 +76,7 @@ export class HttpResponseWebview extends BaseWebview {
         if (this.settings.showResponseInDifferentTab || this.panels.length === 0) {
             panel = window.createWebviewPanel(
                 this.viewType,
-                this.getTitle(response),
+                this.getTitle(response, streaming ? Date.now() - response.startedAt : undefined),
                 { viewColumn: column, preserveFocus: !this.settings.previewResponsePanelTakeFocus },
                 {
                     enableFindWidget: true,
@@ -83,6 +85,10 @@ export class HttpResponseWebview extends BaseWebview {
                 });
 
             panel.onDidDispose(() => {
+                const response = this.panelResponses.get(panel);
+                if (response) {
+                    this.stopStreamingTitle(response);
+                }
                 if (panel === this.activePanel) {
                     this.setPreviewActiveContext(false);
                     this.activePanel = undefined;
@@ -111,7 +117,11 @@ export class HttpResponseWebview extends BaseWebview {
             this.panels.push(panel);
         } else {
             panel = this.panels[this.panels.length - 1];
-            panel.title = this.getTitle(response);
+            const previousResponse = this.panelResponses.get(panel);
+            if (previousResponse) {
+                this.stopStreamingTitle(previousResponse);
+            }
+            panel.title = this.getTitle(response, streaming ? Date.now() - response.startedAt : undefined);
         }
 
         panel.webview.html = streaming
@@ -123,6 +133,9 @@ export class HttpResponseWebview extends BaseWebview {
         panel.reveal(column, !this.settings.previewResponsePanelTakeFocus);
 
         this.panelResponses.set(panel, response);
+        if (streaming) {
+            this.startStreamingTitle(panel, response);
+        }
         this.activePanel = panel;
 
         this.setIsHTMLResponse(this.activeResponse);
@@ -139,7 +152,19 @@ export class HttpResponseWebview extends BaseWebview {
         }
     }
 
+    public completeStreaming(response: HttpResponse) {
+        this.stopStreamingTitle(response);
+        const panel = this.panels.find(candidate => this.panelResponses.get(candidate) === response);
+        if (panel) {
+            panel.title = this.getTitle(response);
+        }
+    }
+
     public dispose() {
+        for (const timer of this.streamingTitleTimers.values()) {
+            clearInterval(timer);
+        }
+        this.streamingTitleTimers.clear();
         disposeAll(this.panels);
     }
 
@@ -218,9 +243,27 @@ export class HttpResponseWebview extends BaseWebview {
         return defaultFileName;
     }
 
-    private getTitle(response: HttpResponse): string {
+    private startStreamingTitle(panel: WebviewPanel, response: HttpResponse) {
+        this.stopStreamingTitle(response);
+        const updateTitle = () => {
+            panel.title = this.getTitle(response, Date.now() - response.startedAt);
+        };
+        updateTitle();
+        this.streamingTitleTimers.set(response, setInterval(updateTitle, 100));
+    }
+
+    private stopStreamingTitle(response: HttpResponse) {
+        const timer = this.streamingTitleTimers.get(response);
+        if (timer) {
+            clearInterval(timer);
+            this.streamingTitleTimers.delete(response);
+        }
+    }
+
+    private getTitle(response: HttpResponse, duration?: number): string {
         const prefix = (this.settings.requestNameAsResponseTabTitle && response.request.name) || 'Response';
-        return `${prefix}(${response.timingPhases.total ?? 0}ms)`;
+        const elapsed = duration ?? response.timingPhases.total ?? Date.now() - response.startedAt;
+        return `${prefix}(${Math.max(0, Math.round(elapsed))}ms)`;
     }
 
     private getFullResponseString(response: HttpResponse): string {

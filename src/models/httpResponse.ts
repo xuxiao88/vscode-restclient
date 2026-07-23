@@ -15,6 +15,7 @@ export class HttpResponse {
         public bodySizeInBytes: number,
         public headersSizeInBytes: number,
         bodyBuffer: Buffer,
+        public startedAt: number,
         public timingPhases: Timings['phases'],
         public request: HttpRequest) {
         this.bodyBuffers = [bodyBuffer];

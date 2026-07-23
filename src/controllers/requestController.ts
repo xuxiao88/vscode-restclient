@@ -7,6 +7,7 @@ import { RequestMetadata } from '../models/requestMetadata';
 import { RequestParserFactory } from '../models/requestParserFactory';
 import { trace } from "../utils/decorator";
 import { HttpClient } from '../utils/httpClient';
+import { removeHeader } from '../utils/misc';
 import { RequestState, RequestStatusEntry } from '../utils/requestStatusBarEntry';
 import { RequestVariableCache } from "../utils/requestVariableCache";
 import { Selector } from '../utils/selector';
@@ -24,6 +25,7 @@ export class RequestController {
     private _sseMessageWebview: SseMessageWebview;
     private _lastRequestSettingTuple: [HttpRequest, IRestClientSettings];
     private _lastPendingRequest?: HttpRequest;
+    private readonly _sseResponseSettings = new WeakMap<HttpResponse, IRestClientSettings>();
 
     public constructor(context: ExtensionContext) {
         this._requestStatusEntry = new RequestStatusEntry();
@@ -32,6 +34,9 @@ export class RequestController {
         this._webview.onDidCloseAllWebviewPanels(() => this._requestStatusEntry.update({ state: RequestState.Closed }));
         this._textDocumentView = new HttpResponseTextDocumentView();
         this._sseMessageWebview = new SseMessageWebview(context);
+        context.subscriptions.push(this._sseMessageWebview.onDidRequestResend(({ response, body }) => {
+            this.resendSseRequest(response, body);
+        }));
     }
 
     @trace('Request')
@@ -93,7 +98,31 @@ export class RequestController {
         }
     }
 
-    private async runCore(httpRequest: HttpRequest, settings: IRestClientSettings, document?: TextDocument) {
+    private async resendSseRequest(response: HttpResponse, body: string) {
+        const settings = this._sseResponseSettings.get(response);
+        if (!settings) {
+            await this._sseMessageWebview.failResend(response, 'Unable to find the settings for the previous request.');
+            return;
+        }
+
+        const previousRequest = response.request;
+        const headers = { ...previousRequest.headers };
+        removeHeader(headers, 'content-length');
+        const request = new HttpRequest(
+            previousRequest.method,
+            previousRequest.url,
+            headers,
+            body,
+            body,
+            previousRequest.name);
+        await this.runCore(request, settings, undefined, response);
+    }
+
+    private async runCore(
+        httpRequest: HttpRequest,
+        settings: IRestClientSettings,
+        document?: TextDocument,
+        previousSseResponse?: HttpResponse) {
         // clear status bar
         this._requestStatusEntry.update({ state: RequestState.Pending });
 
@@ -102,8 +131,8 @@ export class RequestController {
         this._lastRequestSettingTuple = [httpRequest, settings];
 
         // set http request
+        let streamingResponse: HttpResponse | undefined;
         try {
-            let streamingResponse: HttpResponse | undefined;
             let streamingRenderQueue = Promise.resolve();
             const enqueueStreamingRender = (operation: () => Promise<void>) => {
                 streamingRenderQueue = streamingRenderQueue
@@ -117,17 +146,18 @@ export class RequestController {
             const response = await this._httpClient.send(httpRequest, settings, {
                 onStart: eventStreamResponse => {
                     streamingResponse = eventStreamResponse;
+                    this._sseResponseSettings.set(eventStreamResponse, settings);
                     enqueueStreamingRender(async () => {
                         const previewColumn = this.getPreviewColumn(settings);
-                        if (!previewColumn) {
+                        if (!previewColumn && !previousSseResponse) {
                             return;
                         }
-                        if (settings.previewResponseInUntitledDocument) {
+                        if (previewColumn && settings.previewResponseInUntitledDocument) {
                             await this._textDocumentView.renderStreaming(eventStreamResponse, previewColumn);
-                        } else {
+                        } else if (previewColumn) {
                             await this._webview.render(eventStreamResponse, previewColumn, true);
                         }
-                        await this._sseMessageWebview.render(eventStreamResponse, previewColumn);
+                        await this._sseMessageWebview.render(eventStreamResponse, previewColumn, previousSseResponse);
                     });
                 },
                 onEvent: (eventStreamResponse, event) => {
@@ -142,6 +172,15 @@ export class RequestController {
                 }
             });
             await streamingRenderQueue;
+
+            if (streamingResponse) {
+                this._webview.completeStreaming(response);
+                await this._sseMessageWebview.complete(response);
+            } else if (previousSseResponse) {
+                await this._sseMessageWebview.failResend(
+                    previousSseResponse,
+                    'The response is not an SSE stream.');
+            }
 
             // check cancel
             if (httpRequest.isCancelled) {
@@ -173,6 +212,10 @@ export class RequestController {
         } catch (error) {
             // check cancel
             if (httpRequest.isCancelled) {
+                const response = streamingResponse || previousSseResponse;
+                if (response) {
+                    await this._sseMessageWebview.failResend(response, 'Request cancelled.');
+                }
                 return;
             }
 
@@ -186,6 +229,10 @@ export class RequestController {
             this._requestStatusEntry.update({ state: RequestState.Error });
             Logger.error('Failed to send request:', error);
             window.showErrorMessage(error.message);
+            const response = streamingResponse || previousSseResponse;
+            if (response) {
+                await this._sseMessageWebview.failResend(response, error.message || String(error));
+            }
         } finally {
             if (this._lastPendingRequest === httpRequest) {
                 this._lastPendingRequest = undefined;

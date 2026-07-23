@@ -25,6 +25,14 @@ export class SseMessageProcessor {
         return this.path;
     }
 
+    public get messageCount(): number {
+        return this.messages.length;
+    }
+
+    public get currentMatchCount(): number {
+        return this.matchCount;
+    }
+
     public appendEvent(event: string): SseQueryResult | undefined {
         const message = this.parseEvent(event);
         if (!message) {

@@ -2,7 +2,7 @@
   "name": "rest-client",
   "displayName": "REST Client",
   "description": "REST Client for Visual Studio Code",
-  "version": "0.27.0",
+  "version": "0.27.2",
   "publisher": "humao",
   "author": {
     "name": "Huachao Mao",
